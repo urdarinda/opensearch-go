@@ -59,6 +59,10 @@ var reGoVersion = regexp.MustCompile(`go(\d+\.\d+\..+)`)
 type Interface interface {
 	Perform(*http.Request) (*http.Response, error)
 }
+// Instrumented allows to retrieve the current transport Instrumentation
+type Instrumented interface {
+	InstrumentationEnabled() Instrumentation
+}
 
 // Config represents the configuration of HTTP client.
 type Config struct {
@@ -81,6 +85,7 @@ type Config struct {
 
 	EnableMetrics     bool
 	EnableDebugLogger bool
+	Instrumentation Instrumentation
 
 	DiscoverNodesInterval time.Duration
 
@@ -114,6 +119,7 @@ type Client struct {
 	compressRequestBody bool
 
 	metrics *metrics
+	instrumentation Instrumentation
 
 	transport http.RoundTripper
 	logger    Logger
@@ -180,6 +186,7 @@ func New(cfg Config) (*Client, error) {
 		logger:    cfg.Logger,
 		selector:  cfg.Selector,
 		poolFunc:  cfg.ConnectionPoolFunc,
+		instrumentation: cfg.Instrumentation,
 	}
 
 	client.userAgent = initUserAgent()
@@ -354,6 +361,10 @@ func (c *Client) Perform(req *http.Request) (*http.Response, error) {
 			c.metrics.Unlock()
 		}
 
+		if res != nil && c.instrumentation != nil {
+			c.instrumentation.AfterResponse(req.Context(), res)
+		}
+
 		// Retry on configured response statuses
 		if res != nil && !c.disableRetry {
 			for _, code := range c.retryOnStatus {
@@ -395,6 +406,11 @@ func (c *Client) Perform(req *http.Request) (*http.Response, error) {
 	// TODO(karmi): Wrap error
 	return res, err
 }
+
+func (c *Client) InstrumentationEnabled() Instrumentation {
+	return c.instrumentation
+}
+
 
 // URLs returns a list of transport URLs.
 func (c *Client) URLs() []*url.URL {

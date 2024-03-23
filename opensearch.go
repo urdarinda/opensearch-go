@@ -44,6 +44,7 @@ import (
 	"github.com/opensearch-project/opensearch-go/v3/internal/version"
 	"github.com/opensearch-project/opensearch-go/v3/opensearchtransport"
 	"github.com/opensearch-project/opensearch-go/v3/signer"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -96,6 +97,7 @@ type Config struct {
 
 	EnableMetrics     bool // Enable the metrics collection.
 	EnableDebugLogger bool // Enable the debug logging.
+	Instrumentation opensearchtransport.Instrumentation // Enable instrumentation throughout the client.
 
 	RetryBackoff func(attempt int) time.Duration // Optional backoff duration. Default: nil.
 
@@ -105,6 +107,23 @@ type Config struct {
 
 	// Optional constructor function for a custom ConnectionPool. Default: nil.
 	ConnectionPoolFunc func([]*opensearchtransport.Connection, opensearchtransport.Selector) opensearchtransport.ConnectionPool
+}
+
+// NewOpenTelemetryInstrumentation provides the OpenTelemetry integration.
+// provider is optional, if nil is passed the integration will retrieve the provider set globally by otel.
+// captureSearchBody allows to define if the search queries body should be included in the span.
+// Search endpoints are:
+//
+//	search
+//	async_search.submit
+//	msearch
+//	eql.search
+//	terms_enum
+//	search_template
+//	msearch_template
+//	render_search_template
+func NewOpenTelemetryInstrumentation(provider trace.TracerProvider, captureSearchBody bool) opensearchtransport.Instrumentation {
+	return opensearchtransport.NewOtelInstrumentation(provider, captureSearchBody, Version)
 }
 
 // Client represents the OpenSearch client.
@@ -191,6 +210,7 @@ func NewClient(cfg Config) (*Client, error) {
 
 		EnableMetrics:     cfg.EnableMetrics,
 		EnableDebugLogger: cfg.EnableDebugLogger,
+		Instrumentation:   cfg.Instrumentation,
 
 		DiscoverNodesInterval: cfg.DiscoverNodesInterval,
 
@@ -279,6 +299,9 @@ func (c *Client) Do(ctx context.Context, req Request, dataPointer interface{}) (
 		httpReq = httpReq.WithContext(ctx)
 	}
 
+	if instrument := c.InstrumentationEnabled(); instrument!=nil {
+		instrument.BeforeRequest(httpReq)
+	}
 	//nolint:bodyclose // body got already closed by Perform, this is a nopcloser
 	resp, err := c.Perform(httpReq)
 	if err != nil {
@@ -314,6 +337,14 @@ func (c *Client) Metrics() (opensearchtransport.Metrics, error) {
 	}
 
 	return opensearchtransport.Metrics{}, ErrTransportMissingMethodMetrics
+}
+
+// InstrumentationEnabled propagates back to the client the Instrumentation provided by the transport.
+func (c *Client) InstrumentationEnabled() opensearchtransport.Instrumentation {
+	if tp, ok := c.Transport.(opensearchtransport.Instrumented); ok {
+		return tp.InstrumentationEnabled()
+	}
+	return nil
 }
 
 // DiscoverNodes reloads the client connections by fetching information from the cluster.
