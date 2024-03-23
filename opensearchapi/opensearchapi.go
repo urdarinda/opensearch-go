@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/opensearch-project/opensearch-go/v3"
@@ -99,11 +101,34 @@ func NewDefaultClient() (*Client, error) {
 
 	return clientInit(rootClient), nil
 }
+func getOperationName() string {
+	pc, _, _, ok := runtime.Caller(1)
+	if ok {
+		fullName := runtime.FuncForPC(pc).Name()
+		return strings.ToLower(fullName)
+	}
+	return "unknown"
+}
+
 
 // do calls the opensearch.Client.Do() and checks the response for openseach api errors
-func (c *Client) do(ctx context.Context, req opensearch.Request, dataPointer any) (*opensearch.Response, error) {
+func (c *Client) do(providedCtx context.Context, req opensearch.Request, dataPointer any) (*opensearch.Response, error) {
+	
+	var ctx context.Context
+	if instrument := c.Client.InstrumentationEnabled(); instrument!=nil {
+		ctx = instrument.Start(providedCtx, getOperationName())
+		defer instrument.Close(ctx)
+	}
+
+	if ctx == nil {
+		ctx = providedCtx
+	}
+
 	resp, err := c.Client.Do(ctx, req, dataPointer)
 	if err != nil {
+		if instrument := c.Client.InstrumentationEnabled(); instrument!=nil {
+			instrument.RecordError(ctx, err)
+		}
 		return nil, err
 	}
 
